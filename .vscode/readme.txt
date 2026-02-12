@@ -1,0 +1,1 @@
+Disable the clangd extension by going to extensions panel -> clangd -> clicking on the gear icon -> disable per workspace
