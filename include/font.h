@@ -3,11 +3,11 @@
 
 #include <Arduino.h>
 
-// Simple font for numbers 0-9 and colon
+// Simple font for numbers 0-9, colon, minus, and C
 // Each character is 3 pixels wide and 5 pixels high
 // Each byte represents a column of 5 pixels
 
-const uint8_t font[11][3] = {
+const uint8_t font[13][3] = {
     // 0
     {0x1F, 0x11, 0x1F},
     // 1
@@ -28,8 +28,12 @@ const uint8_t font[11][3] = {
     {0x1F, 0x15, 0x1F},
     // 9
     {0x17, 0x15, 0x1F},
-    // :
-    {0x00, 0x0A, 0x00}
+    // : (index 10)
+    {0x00, 0x0A, 0x00},
+    // - (index 11)
+    {0x04, 0x04, 0x04},
+    // C (index 12)
+    {0x1F, 0x11, 0x11}
 };
 
 #endif
