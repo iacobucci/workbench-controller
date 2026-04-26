@@ -9,4 +9,4 @@ Arduino uno r4 dashboard for interacting with philips hue server[^server]. Built
 - **right**: brighten light.
 - **most right**: toggle and update the current weather temperature. Connects to [weatherapi](https://www.weatherapi.com/)
 
-[^server]: [https://github.com/iacobucci/iot-server](IoT Server)
+[^server]: [IoT Server](https://github.com/iacobucci/iot-server)
