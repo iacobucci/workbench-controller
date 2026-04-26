@@ -1,1 +1,3 @@
-<!-- TODO add photos, explain use cases, make features list -->
+# Arduino workbench controller
+
+![](./res/image.jpg)
