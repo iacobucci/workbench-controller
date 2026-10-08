@@ -5,7 +5,7 @@ BAUD ?= 115200
 
 all:
 	make compile
-	make run
+	make upload
 
 compile:
 	pio run
