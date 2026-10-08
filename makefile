@@ -3,6 +3,10 @@
 PORT ?= /dev/ttyACM0
 BAUD ?= 115200
 
+all:
+	make compile
+	make run
+
 compile:
 	pio run
 
