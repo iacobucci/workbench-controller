@@ -1,413 +1,276 @@
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoGraphics.h>
 #include <Arduino_LED_Matrix.h>
-#include <NTPClient.h>
-#include <WiFiS3.h>
-#include <WiFiUdp.h>
 
-#include "secrets.h"
-
-// --- Config WiFi ---
-const char *ssid = MYSSID;
-const char *password = MYPASSWORD;
-
-String weathersite = "api.weatherapi.com";
-String weatherapikey = WEATHER_API_KEY;
-const char *city = "Bologna";
-
-// Define NTP Client to get time
-const long utcOffsetInSeconds = 3600;
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds, 60000);
-
-// --- Config server ---
-const char *hostname = "rock-3c";
-const char *fallback_ip = "192.168.0.65";
-const int port = 8000;
-
-// --- Pin pulsanti ---
+// --- Pin definitions ---
 const int PIN_MINUS = 2;
 const int PIN_POWER = 3;
 const int PIN_PLUS = 4;
 const int PIN_UPDATE = 5;
 
-// --- Variabili stato ---
-bool powerState = false;
-float brightness = 0.5;
-float currentTemperature = 0.0;
-String currentCondition = "";
-bool showWeather = false;
+// --- State variables ---
+bool currentPower = false;
+int currentBrightness = 128;
+bool hasState = false;
 
-WiFiClient client;
-
+// --- LED Matrix ---
 ArduinoLEDMatrix matrix;
 
-// --- Variabile per monitorare la connessione ---
-unsigned long lastConnectionCheck = 0;
-const unsigned long CONNECTION_CHECK_INTERVAL =
-	30000; // Controlla ogni 30 secondi
+// Default "happy" face frame
+const uint32_t FRAME_HAPPY[] = {
+	0x19819,
+	0x80000001,
+	0x81f8000
+};
 
-void checkWiFiConnection() {
-	if (WiFi.status() != WL_CONNECTED) {
-		Serial.println("⚠️ WiFi disconnesso! Riconnessione...");
-		WiFi.disconnect();
-		delay(1000);
+// Off frame (small dot)
+const uint32_t FRAME_OFF[] = {
+	0x0,
+	0x00060000,
+	0x0
+};
 
-		if (WiFi.begin(ssid, password) == WL_CONNECTED) {
-			Serial.println("✅ WiFi riconnesso!");
-			Serial.print("IP locale: ");
-			Serial.println(WiFi.localIP());
+unsigned long feedbackUntil = 0;
+const unsigned long FEEDBACK_DURATION = 1500; // ms
+
+// --- Debounce state ---
+struct ButtonDebounce {
+	int pin;
+	bool lastReading;
+	bool isPressed;
+	unsigned long lastDebounceTime;
+};
+
+ButtonDebounce btnMinus  = {PIN_MINUS, HIGH, false, 0};
+ButtonDebounce btnPower  = {PIN_POWER, HIGH, false, 0};
+ButtonDebounce btnPlus   = {PIN_PLUS,  HIGH, false, 0};
+ButtonDebounce btnUpdate = {PIN_UPDATE, HIGH, false, 0};
+
+const unsigned long DEBOUNCE_DELAY = 40; // ms
+
+// --- Visual feedback helpers ---
+void showDefaultDisplay() {
+	if (hasState) {
+		if (currentPower) {
+			matrix.loadFrame(FRAME_HAPPY);
 		} else {
-			Serial.println("❌ Riconnessione fallita!");
+			matrix.loadFrame(FRAME_OFF);
 		}
-	}
-}
-
-void httpPost(const char *path, const String &jsonBody) {
-	// Verifica connessione WiFi prima di tentare la richiesta
-	if (WiFi.status() != WL_CONNECTED) {
-		Serial.println("⚠️ WiFi non connesso, tento riconnessione...");
-		checkWiFiConnection();
-		if (WiFi.status() != WL_CONNECTED) {
-			Serial.println("❌ Impossibile procedere senza WiFi");
-			return;
-		}
-	}
-
-	Serial.print("Connessione a ");
-	Serial.print(hostname);
-	Serial.print("...");
-
-	IPAddress serverIP;
-	if (WiFi.hostByName(hostname, serverIP) != 1) {
-		Serial.println("❌ DNS fallito, uso IP statico.");
-		serverIP.fromString(fallback_ip);
 	} else {
-		Serial.print("✅ Risolto: ");
-		Serial.println(serverIP);
-	}
-
-	// Chiudi eventuali connessioni precedenti rimaste aperte
-	if (client.connected()) {
-		client.stop();
-		delay(100);
-	}
-
-	// Timeout per la connessione
-	unsigned long startAttempt = millis();
-	const unsigned long timeout = 5000; // 5 secondi timeout
-
-	if (client.connect(serverIP, port)) {
-		Serial.println("Connesso al server.");
-
-		String request = "";
-		request += String("POST ") + path + " HTTP/1.1\r\n";
-		request += String("Host: ") + hostname + ":" + String(port) + "\r\n";
-		request += "User-Agent: Arduino/1.0\r\n";
-		request += "Accept: */*\r\n";
-		request += "Content-Type: application/json\r\n";
-		request += String("Content-Length: ") + jsonBody.length() + "\r\n";
-		request += "Connection: close\r\n";
-		request += "\r\n";
-		request += jsonBody;
-
-		client.print(request);
-		Serial.print("→ POST ");
-		Serial.print(path);
-		Serial.print(" ");
-		Serial.println(jsonBody);
-
-		// Leggi risposta con timeout
-		while (client.connected() && (millis() - startAttempt < timeout)) {
-			while (client.available()) {
-				char c = client.read();
-				Serial.write(c);
-			}
-		}
-
-		client.stop();
-		Serial.println("\nConnessione chiusa.");
-	} else {
-		Serial.println("❌ Connessione fallita!");
-		// Prova a riconnettersi al WiFi per il prossimo tentativo
-		checkWiFiConnection();
+		matrix.loadFrame(FRAME_HAPPY);
 	}
 }
 
-String httpGet(const char *path) {
-	String body = "";
-
-	// Verifica WiFi
-	if (WiFi.status() != WL_CONNECTED) {
-		Serial.println("⚠️ WiFi non connesso, tento riconnessione...");
-		checkWiFiConnection();
-		if (WiFi.status() != WL_CONNECTED) {
-			Serial.println("❌ Impossibile procedere senza WiFi");
-			return body;
-		}
-	}
-
-	// Risoluzione DNS
-	IPAddress serverIP;
-	if (WiFi.hostByName(hostname, serverIP) != 1) {
-		Serial.println("❌ DNS fallito, uso IP statico");
-		serverIP.fromString(fallback_ip);
-	}
-
-	// Chiudi connessioni precedenti
-	if (client.connected()) {
-		client.stop();
-		delay(50);
-	}
-
-	const unsigned long timeout = 5000;
-	unsigned long startTime = millis();
-
-	if (!client.connect(serverIP, port)) {
-		Serial.println("❌ Connessione fallita");
-		return body;
-	}
-
-	// Invia richiesta GET
-	client.print("GET ");
-	client.print(path);
-	client.println(" HTTP/1.1");
-	client.print("Host: ");
-	client.println(hostname);
-	client.println("Connection: close");
-	client.println();
-
-	// ---- Lettura risposta ----
-	bool headersEnded = false;
-
-	while (client.connected() && millis() - startTime < timeout) {
-		while (client.available()) {
-			String line = client.readStringUntil('\n');
-
-			if (!headersEnded) {
-				// Fine header HTTP
-				if (line == "\r") {
-					headersEnded = true;
-				}
-			} else {
-				body += line + "\n";
-			}
-		}
-	}
-
-	client.stop();
-	return body;
-}
-
-static const int matrix_width = 12;
-
-static const int matrix_height = 8;
-
-static unsigned long lastClockUpdate = 0;
-
-const unsigned long CLOCK_UPDATE_INTERVAL = 60000; // 1 minuto
-
-void setup() {
-	Serial.begin(115200);
-	while (!Serial && millis() < 5000)
-		; // Timeout di 5 secondi per Serial
-	matrix.begin();
-	const uint32_t happy[] = {0x19819, 0x80000001, 0x81f8000};
-	matrix.loadFrame(happy);
-	pinMode(PIN_MINUS, INPUT_PULLUP);
-	pinMode(PIN_POWER, INPUT_PULLUP);
-	pinMode(PIN_PLUS, INPUT_PULLUP);
-	pinMode(PIN_UPDATE, INPUT_PULLUP);
-	Serial.println("Connessione alla rete WiFi...");
-	WiFi.disconnect(); // Assicurati di partire pulito
-	delay(100);
-	if (WiFi.begin(ssid, password) != WL_CONNECTED) {
-		Serial.println("❌ Connessione WiFi fallita!");
-		while (true) {
-			delay(1000);
-		}
-	}
-	// Disabilita il power saving del WiFi (importante!)
-	WiFi.setHostname("arduino-lamp-controller");
-	Serial.println("✅ Connesso al WiFi!");
-	Serial.print("IP locale: ");
-	Serial.println(WiFi.localIP());
-	Serial.println("Pronto a ricevere input dai pulsanti.");
-	timeClient.begin();
-}
-float getServerBrightness() {
-	String response = httpGet("/status");
-	if (response.length() == 0) {
-		Serial.println("❌ Stato vuoto");
-		return -1.0;
-	}
-	int idx = response.indexOf("\"brightness\":");
-	if (idx < 0) {
-		Serial.println("❌ Brightness non trovato");
-		return -1.0;
-	}
-	idx += strlen("\"brightness\":");
-	return response.substring(idx).toFloat();
-}
-void setServerBrightness(float value) {
-	if (value < 0.0)
-		value = 0.0;
-	if (value > 1.0)
-		value = 1.0;
-	String body = String("{\"brightness\":") + String(value, 1) + "}";
-	httpPost("/brightness", body);
-}
-
-void displayStaticTemp(int temp) {
+void displayText(const String &text) {
 	matrix.beginDraw();
 	matrix.stroke(0xFFFFFF);
 	matrix.textFont(Font_4x6);
 	matrix.clear();
-	
-	String text = String(temp) + "C";
-	
-	// Centra il testo orizzontalmente
-	// Font_4x6: ogni carattere è largo circa 4 pixel
-	int xStart = (12 - (text.length() * 4)) / 2;
+
+	int xStart = (12 - ((int)text.length() * 4)) / 2;
 	if (xStart < 0) xStart = 0;
 
 	matrix.beginText(xStart, 1, 0xFFFFFF);
 	matrix.print(text);
 	matrix.endText();
 	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
 }
 
-void printWeather() {
-	Serial.println("Connecting to WeatherAPI...");
-	if (!client.connect(weathersite.c_str(), 80)) {
-		Serial.println("Connection failed");
-		return;
+void drawPowerIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	// Power symbol: circle with open top and center line
+	matrix.rect(3, 1, 6, 6);
+	matrix.stroke(0x000000);
+	matrix.point(5, 1);
+	matrix.point(6, 1);
+	matrix.stroke(0xFFFFFF);
+	matrix.line(5, 0, 5, 3);
+	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+void drawPlusIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	matrix.line(5, 1, 5, 6);
+	matrix.line(2, 3, 8, 3);
+	matrix.line(2, 4, 8, 4);
+	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+void drawMinusIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	matrix.line(3, 3, 8, 3);
+	matrix.line(3, 4, 8, 4);
+	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+void drawSyncIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	matrix.textFont(Font_4x6);
+	matrix.beginText(0, 1, 0xFFFFFF);
+	matrix.print("SYNC");
+	matrix.endText();
+	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+// Check button debounce and detect press event
+bool checkButtonPressed(ButtonDebounce &btn) {
+	bool reading = digitalRead(btn.pin);
+
+	if (reading != btn.lastReading) {
+		btn.lastDebounceTime = millis();
+		btn.lastReading = reading;
 	}
-	// HTTP request
-	client.print("GET /v1/current.json?key=" + weatherapikey + "&q=" + city +
-				 "&aqi=no HTTP/1.1\r\n" + "Host: " + weathersite + "\r\n" +
-				 "Connection: close\r\n\r\n");
-	// Skip HTTP headers
-	while (client.connected()) {
-		String line = client.readStringUntil('\n');
-		if (line == "\r")
-			break;
-	}
-	// Read JSON body
-	String payload;
-	unsigned long readTimeout = millis();
-	while (client.connected() || client.available()) {
-		if (client.available()) {
-			payload += (char)client.read();
-			readTimeout = millis();
+
+	if ((millis() - btn.lastDebounceTime) > DEBOUNCE_DELAY) {
+		if (reading == LOW && !btn.isPressed) {
+			btn.isPressed = true;
+			return true;
+		} else if (reading == HIGH && btn.isPressed) {
+			btn.isPressed = false;
 		}
-		if (millis() - readTimeout > 2000) break;
 	}
-	client.stop();
-
-	payload.trim();
-	
-	// Troubleshooting: Cerchiamo l'inizio del JSON
-	int jsonStart = payload.indexOf('{');
-	if (jsonStart == -1) {
-		Serial.println("Errore: Nessun JSON trovato nella risposta");
-		Serial.println("Risposta ricevuta:");
-		Serial.println(payload);
-		return;
-	}
-	
-	// Riduciamo il payload solo alla parte JSON (rimuove eventuali residui di header o chunked encoding iniziale)
-	String jsonBody = payload.substring(jsonStart);
-
-	// Parse JSON con Filtro (consuma meno memoria e ignora il superfluo)
-	JsonDocument filter;
-	filter["current"]["temp_c"] = true;
-	filter["current"]["condition"]["text"] = true;
-
-	JsonDocument doc;
-	DeserializationError error = deserializeJson(doc, jsonBody, DeserializationOption::Filter(filter));
-
-	if (error) {
-		Serial.print("JSON error: ");
-		Serial.println(error.c_str());
-		Serial.println("Corpo JSON tentato:");
-		Serial.println(jsonBody);
-		return;
-	}
-
-	// Extract data con valori di default
-	currentCondition = doc["current"]["condition"]["text"] | "N/A";
-	currentTemperature = doc["current"]["temp_c"] | 0.0;
-
-	// Print
-	Serial.println("---- Weather ----");
-	Serial.print("Condition: ");
-	Serial.println(currentCondition);
-	Serial.print("Temperature: ");
-	Serial.print(currentTemperature);
-	Serial.println(" °C");
-	Serial.println("-----------------");
-	
-	displayStaticTemp((int)currentTemperature);
+	return false;
 }
 
+// Parse incoming status or signal from Serial (Rock board or PlatformIO monitor)
+void parseIncomingSerial(String line) {
+	line.trim();
+	if (line.length() == 0) return;
 
+	Serial.print("[RECV] ");
+	Serial.println(line);
+
+	String lineUpper = line;
+	lineUpper.toUpperCase();
+
+	// Check for STATUS message: e.g. "STATUS state=ON brightness=204"
+	if (lineUpper.startsWith("STATUS")) {
+		hasState = true;
+		if (lineUpper.indexOf("STATE=ON") >= 0 || lineUpper.indexOf("STATE: ON") >= 0) {
+			currentPower = true;
+		} else if (lineUpper.indexOf("STATE=OFF") >= 0 || lineUpper.indexOf("STATE: OFF") >= 0) {
+			currentPower = false;
+		}
+
+		int bIdx = lineUpper.indexOf("BRIGHTNESS=");
+		if (bIdx < 0) bIdx = lineUpper.indexOf("BRIGHTNESS:");
+		if (bIdx >= 0) {
+			int valStart = lineUpper.indexOf("=", bIdx);
+			if (valStart < 0) valStart = lineUpper.indexOf(":", bIdx);
+			if (valStart >= 0) {
+				String bStr = lineUpper.substring(valStart + 1);
+				bStr.trim();
+				int endSpace = bStr.indexOf(' ');
+				if (endSpace > 0) bStr = bStr.substring(0, endSpace);
+				currentBrightness = bStr.toInt();
+			}
+		}
+
+		if (currentPower) {
+			int pct = (currentBrightness * 100) / 254;
+			displayText(String(pct) + "%");
+		} else {
+			displayText("OFF");
+		}
+		return;
+	}
+
+	// Commands typed via PlatformIO monitor
+	if (lineUpper == "POWER" || lineUpper == "TOGGLE" || lineUpper == "P") {
+		Serial.println("POWER");
+		drawPowerIcon();
+	} else if (lineUpper == "BRIGHTNESS_UP" || lineUpper == "+" || lineUpper == "UP") {
+		Serial.println("BRIGHTNESS_UP");
+		drawPlusIcon();
+	} else if (lineUpper == "BRIGHTNESS_DOWN" || lineUpper == "-" || lineUpper == "DOWN") {
+		Serial.println("BRIGHTNESS_DOWN");
+		drawMinusIcon();
+	} else if (lineUpper == "STATUS" || lineUpper == "UPDATE" || lineUpper == "?") {
+		Serial.println("STATUS");
+		drawSyncIcon();
+	} else if (lineUpper.startsWith("OK")) {
+		// Acknowledgment received
+		if (lineUpper.indexOf("POWER") >= 0) {
+			drawPowerIcon();
+		} else if (lineUpper.indexOf("BRIGHTNESS") >= 0) {
+			drawPlusIcon();
+		}
+	}
+}
+
+void setup() {
+	// USB Serial at 115200 baud
+	Serial.begin(115200);
+
+	// Wait up to 2 seconds for USB CDC Serial to connect (if monitoring)
+	unsigned long serialWaitStart = millis();
+	while (!Serial && (millis() - serialWaitStart < 2000)) {
+		;
+	}
+
+	// Initialize LED matrix
+	matrix.begin();
+	matrix.loadFrame(FRAME_HAPPY);
+
+	// Initialize button pins
+	pinMode(PIN_MINUS, INPUT_PULLUP);
+	pinMode(PIN_POWER, INPUT_PULLUP);
+	pinMode(PIN_PLUS, INPUT_PULLUP);
+	pinMode(PIN_UPDATE, INPUT_PULLUP);
+
+	// Announce readiness over USB Serial
+	Serial.println("READY: Arduino Workbench Controller (USB Mode)");
+	Serial.println("Commands available: POWER, BRIGHTNESS_UP, BRIGHTNESS_DOWN, STATUS");
+
+	// Initial status request to IoT server
+	Serial.println("STATUS");
+}
 
 void loop() {
-	timeClient.update();
-	static bool initialized = false;
-	static bool lastMinus = HIGH;
-	static bool lastPower = HIGH;
-	static bool lastPlus = HIGH;
-	static bool lastUpdate = HIGH;
-	// Controllo periodico della connessione WiFi
-	if (millis() - lastConnectionCheck > CONNECTION_CHECK_INTERVAL) {
-		checkWiFiConnection();
-		lastConnectionCheck = millis();
+	// Check physical buttons
+	if (checkButtonPressed(btnPower)) {
+		Serial.println("POWER");
+		drawPowerIcon();
 	}
-	if (!showWeather && millis() - lastClockUpdate > CLOCK_UPDATE_INTERVAL) {
-		lastClockUpdate = millis();
-		matrix.beginText(0, 1, 0xFFFFFF);
-		matrix.print(timeClient.getFormattedTime());
-		matrix.endText(SCROLL_LEFT);
-		delay(100);
+
+	if (checkButtonPressed(btnPlus)) {
+		Serial.println("BRIGHTNESS_UP");
+		drawPlusIcon();
 	}
-	bool minus = digitalRead(PIN_MINUS);
-	bool power = digitalRead(PIN_POWER);
-	bool plus = digitalRead(PIN_PLUS);
-	bool update = digitalRead(PIN_UPDATE);
-	// --- Fase di inizializzazione ---
-	if (!initialized) {
-		lastMinus = minus;
-		lastPower = power;
-		lastPlus = plus;
-		lastUpdate = update;
-		initialized = true;
-		return;
+
+	if (checkButtonPressed(btnMinus)) {
+		Serial.println("BRIGHTNESS_DOWN");
+		drawMinusIcon();
 	}
-	// --- Gestione power toggle ---
-	if (power == LOW && lastPower == HIGH) {
-		httpGet("/power?form_toggle=1");
+
+	if (checkButtonPressed(btnUpdate)) {
+		Serial.println("STATUS");
+		drawSyncIcon();
 	}
-	if (plus == LOW && lastPlus == HIGH) {
-		httpGet("/increase_brightness");
+
+	// Check incoming USB Serial messages (from Rock 3C IoT server or PlatformIO monitor)
+	while (Serial.available()) {
+		String line = Serial.readStringUntil('\n');
+		parseIncomingSerial(line);
 	}
-	if (minus == LOW && lastMinus == HIGH) {
-		httpGet("/decrease_brightness");
+
+	// Restore default display when feedback animation ends
+	if (feedbackUntil > 0 && millis() >= feedbackUntil) {
+		feedbackUntil = 0;
+		showDefaultDisplay();
 	}
-	if (update == LOW && lastUpdate == HIGH) {
-		Serial.println("UPDATE!!!");
-		showWeather = !showWeather;
-		if (showWeather) {
-			printWeather();
-		} else {
-			lastClockUpdate = 0; // Trigger immediate clock update
-		}
-	}
-	// --- Aggiornamento stato ---
-	lastMinus = minus;
-	lastPower = power;
-	lastPlus = plus;
-	lastUpdate = update;
-	delay(200);
 }
