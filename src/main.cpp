@@ -17,22 +17,11 @@ bool hasState = false;
 // --- LED Matrix ---
 ArduinoLEDMatrix matrix;
 
-// Default "happy" face frame
-const uint32_t FRAME_HAPPY[] = {
-	0x19819,
-	0x80000001,
-	0x81f8000
-};
-
-// Off frame (small dot)
-const uint32_t FRAME_OFF[] = {
-	0x0,
-	0x00060000,
-	0x0
-};
+// Blank frame: all 96 LEDs completely OFF (no light emission at night)
+const uint32_t FRAME_BLANK[] = {0, 0, 0};
 
 unsigned long feedbackUntil = 0;
-const unsigned long FEEDBACK_DURATION = 1500; // ms
+const unsigned long FEEDBACK_DURATION = 1200; // ms
 
 // --- Button tracking (instant response with debounce lockout) ---
 bool lastMinus  = HIGH;
@@ -48,16 +37,8 @@ unsigned long lastUpdateTime = 0;
 const unsigned long DEBOUNCE_LOCKOUT = 200; // ms
 
 // --- Visual feedback helpers ---
-void showDefaultDisplay() {
-	if (hasState) {
-		if (currentPower) {
-			matrix.loadFrame(FRAME_HAPPY);
-		} else {
-			matrix.loadFrame(FRAME_OFF);
-		}
-	} else {
-		matrix.loadFrame(FRAME_HAPPY);
-	}
+void turnOffDisplay() {
+	matrix.loadFrame(FRAME_BLANK);
 }
 
 void displayText(const String &text) {
@@ -202,9 +183,9 @@ void setup() {
 		;
 	}
 
-	// Initialize LED matrix
+	// Initialize LED matrix and ensure it is completely OFF
 	matrix.begin();
-	matrix.loadFrame(FRAME_HAPPY);
+	turnOffDisplay();
 
 	// Initialize button pins
 	pinMode(PIN_MINUS, INPUT_PULLUP);
@@ -273,9 +254,9 @@ void loop() {
 		}
 	}
 
-	// Restore default display when feedback animation ends
+	// Turn off display completely when feedback expires (idle = completely dark)
 	if (feedbackUntil > 0 && millis() >= feedbackUntil) {
 		feedbackUntil = 0;
-		showDefaultDisplay();
+		turnOffDisplay();
 	}
 }
