@@ -7,7 +7,8 @@
 const int PIN_MINUS = 2;
 const int PIN_POWER = 3;
 const int PIN_PLUS = 4;
-const int PIN_UPDATE = 5;
+const int PIN_RESTART = 5;
+const int PIN_UPDATE = PIN_RESTART; // Backward compatibility alias
 
 // --- State variables ---
 bool currentPower = false;
@@ -24,15 +25,15 @@ unsigned long feedbackUntil = 0;
 const unsigned long FEEDBACK_DURATION = 1200; // ms
 
 // --- Button tracking (instant response with debounce lockout) ---
-bool lastMinus  = HIGH;
-bool lastPower  = HIGH;
-bool lastPlus   = HIGH;
-bool lastUpdate = HIGH;
+bool lastMinus   = HIGH;
+bool lastPower   = HIGH;
+bool lastPlus    = HIGH;
+bool lastRestart = HIGH;
 
-unsigned long lastMinusTime  = 0;
-unsigned long lastPowerTime  = 0;
-unsigned long lastPlusTime   = 0;
-unsigned long lastUpdateTime = 0;
+unsigned long lastMinusTime   = 0;
+unsigned long lastPowerTime   = 0;
+unsigned long lastPlusTime    = 0;
+unsigned long lastRestartTime = 0;
 
 const unsigned long DEBOUNCE_LOCKOUT = 200; // ms
 
@@ -88,6 +89,18 @@ void drawMinusIcon() {
 	matrix.stroke(0xFFFFFF);
 	matrix.line(3, 3, 8, 3);
 	matrix.line(3, 4, 8, 4);
+	matrix.endDraw();
+	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+void drawRestartIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	matrix.textFont(Font_4x6);
+	matrix.beginText(0, 1, 0xFFFFFF);
+	matrix.print("RST");
+	matrix.endText();
 	matrix.endDraw();
 	feedbackUntil = millis() + FEEDBACK_DURATION;
 }
@@ -161,6 +174,9 @@ void parseIncomingSerial(const String &line) {
 	} else if (lineUpper == "BRIGHTNESS_DOWN" || lineUpper == "-" || lineUpper == "DOWN") {
 		sendSignal("BRIGHTNESS_DOWN");
 		drawMinusIcon();
+	} else if (lineUpper == "RESTART" || lineUpper == "RESET" || lineUpper == "R") {
+		sendSignal("RESTART");
+		drawRestartIcon();
 	} else if (lineUpper == "STATUS" || lineUpper == "UPDATE" || lineUpper == "?") {
 		sendSignal("STATUS");
 		drawSyncIcon();
@@ -169,6 +185,8 @@ void parseIncomingSerial(const String &line) {
 			drawPowerIcon();
 		} else if (lineUpper.indexOf("BRIGHTNESS") >= 0) {
 			drawPlusIcon();
+		} else if (lineUpper.indexOf("RESTART") >= 0 || lineUpper.indexOf("RESET") >= 0) {
+			drawRestartIcon();
 		}
 	}
 }
@@ -191,7 +209,7 @@ void setup() {
 	pinMode(PIN_MINUS, INPUT_PULLUP);
 	pinMode(PIN_POWER, INPUT_PULLUP);
 	pinMode(PIN_PLUS, INPUT_PULLUP);
-	pinMode(PIN_UPDATE, INPUT_PULLUP);
+	pinMode(PIN_RESTART, INPUT_PULLUP);
 
 	// Announce readiness over USB Serial
 	sendSignal("READY: Arduino Workbench Controller (USB Mode)");
@@ -205,10 +223,10 @@ void loop() {
 	unsigned long now = millis();
 
 	// Read physical buttons (falling edge = pressed)
-	bool minus  = digitalRead(PIN_MINUS);
-	bool power  = digitalRead(PIN_POWER);
-	bool plus   = digitalRead(PIN_PLUS);
-	bool update = digitalRead(PIN_UPDATE);
+	bool minus   = digitalRead(PIN_MINUS);
+	bool power   = digitalRead(PIN_POWER);
+	bool plus    = digitalRead(PIN_PLUS);
+	bool restart = digitalRead(PIN_RESTART);
 
 	if (power == LOW && lastPower == HIGH && (now - lastPowerTime > DEBOUNCE_LOCKOUT)) {
 		lastPowerTime = now;
@@ -228,16 +246,16 @@ void loop() {
 		drawMinusIcon();
 	}
 
-	if (update == LOW && lastUpdate == HIGH && (now - lastUpdateTime > DEBOUNCE_LOCKOUT)) {
-		lastUpdateTime = now;
-		sendSignal("STATUS");
-		drawSyncIcon();
+	if (restart == LOW && lastRestart == HIGH && (now - lastRestartTime > DEBOUNCE_LOCKOUT)) {
+		lastRestartTime = now;
+		sendSignal("RESTART");
+		drawRestartIcon();
 	}
 
-	lastMinus  = minus;
-	lastPower  = power;
-	lastPlus   = plus;
-	lastUpdate = update;
+	lastMinus   = minus;
+	lastPower   = power;
+	lastPlus    = plus;
+	lastRestart = restart;
 
 	// Non-blocking serial read (accumulate until newline)
 	while (Serial.available()) {
