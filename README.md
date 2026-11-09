@@ -11,7 +11,7 @@ The controller connects to the Rock 3C board via USB-C cable. It communicates ov
 - **left (Pin 2)**: Dim light (`BRIGHTNESS_DOWN`).
 - **center (Pin 3)**: Toggle power (`POWER`).
 - **right (Pin 4)**: Brighten light (`BRIGHTNESS_UP`).
-- **most right (Pin 5)**: Restart service (`RESTART`).
+- **most right (Pin 5)**: Reset button. Short press (<1s): Restart service (`RESTART`). Long press (hold 3s): Reboot Rock 3C board (`REBOOT`).
 
 ## Serial Protocol & Signals
 
@@ -22,7 +22,8 @@ The board communicates over USB Serial at **115200 baud**:
 | Pin 3 (Power) | `POWER` | Power icon |
 | Pin 4 (Plus) | `BRIGHTNESS_UP` | `+` icon |
 | Pin 2 (Minus) | `BRIGHTNESS_DOWN` | `-` icon |
-| Pin 5 (Restart) | `RESTART` | `RST` |
+| Pin 5 short press (Restart) | `RESTART` | `RST` |
+| Pin 5 hold 3s (Reboot) | `REBOOT` | `2` -> `1` -> `RBT` |
 
 ### Using PlatformIO Monitor
 
@@ -39,6 +40,7 @@ Supported commands you can type into the monitor:
 - `BRIGHTNESS_UP` or `+`: Triggers brightness increase signal
 - `BRIGHTNESS_DOWN` or `-`: Triggers brightness decrease signal
 - `RESTART` or `r`: Triggers service restart signal
+- `REBOOT`: Triggers Rock 3C system reboot (`sudo systemctl reboot`)
 - `STATUS` or `?`: Requests status sync
 
 When connected to the Rock 3C IoT server, the server responds with status updates (e.g. `STATUS state=ON brightness=204`), which are parsed by the board and shown on the 12x8 LED matrix display.

@@ -33,13 +33,19 @@ bool lastRestart = HIGH;
 unsigned long lastMinusTime   = 0;
 unsigned long lastPowerTime   = 0;
 unsigned long lastPlusTime    = 0;
-unsigned long lastRestartTime = 0;
+
+// Long-press reboot tracking for Reset button (Pin 5)
+unsigned long restartPressTime = 0;
+bool restartLongTriggered      = false;
+int restartCountdownStage      = 0;
+const unsigned long REBOOT_HOLD_DURATION = 3000; // 3 seconds to reboot rock-3c
 
 const unsigned long DEBOUNCE_LOCKOUT = 200; // ms
 
 // --- Visual feedback helpers ---
 void turnOffDisplay() {
 	matrix.loadFrame(FRAME_BLANK);
+	feedbackUntil = 0;
 }
 
 void displayText(const String &text) {
@@ -103,6 +109,18 @@ void drawRestartIcon() {
 	matrix.endText();
 	matrix.endDraw();
 	feedbackUntil = millis() + FEEDBACK_DURATION;
+}
+
+void drawRebootIcon() {
+	matrix.beginDraw();
+	matrix.clear();
+	matrix.stroke(0xFFFFFF);
+	matrix.textFont(Font_4x6);
+	matrix.beginText(0, 1, 0xFFFFFF);
+	matrix.print("RBT");
+	matrix.endText();
+	matrix.endDraw();
+	feedbackUntil = millis() + 3000;
 }
 
 void drawSyncIcon() {
@@ -174,6 +192,9 @@ void parseIncomingSerial(const String &line) {
 	} else if (lineUpper == "BRIGHTNESS_DOWN" || lineUpper == "-" || lineUpper == "DOWN") {
 		sendSignal("BRIGHTNESS_DOWN");
 		drawMinusIcon();
+	} else if (lineUpper == "REBOOT" || lineUpper == "SYSTEM_REBOOT" || lineUpper == "SYS_REBOOT") {
+		sendSignal("REBOOT");
+		drawRebootIcon();
 	} else if (lineUpper == "RESTART" || lineUpper == "RESET" || lineUpper == "R") {
 		sendSignal("RESTART");
 		drawRestartIcon();
@@ -181,7 +202,9 @@ void parseIncomingSerial(const String &line) {
 		sendSignal("STATUS");
 		drawSyncIcon();
 	} else if (lineUpper.startsWith("OK")) {
-		if (lineUpper.indexOf("POWER") >= 0) {
+		if (lineUpper.indexOf("REBOOT") >= 0) {
+			drawRebootIcon();
+		} else if (lineUpper.indexOf("POWER") >= 0) {
 			drawPowerIcon();
 		} else if (lineUpper.indexOf("BRIGHTNESS") >= 0) {
 			drawPlusIcon();
@@ -246,10 +269,37 @@ void loop() {
 		drawMinusIcon();
 	}
 
-	if (restart == LOW && lastRestart == HIGH && (now - lastRestartTime > DEBOUNCE_LOCKOUT)) {
-		lastRestartTime = now;
-		sendSignal("RESTART");
-		drawRestartIcon();
+	// Reset button (Pin 5): short press (<1s) restarts service, 3s hold reboots rock-3c
+	if (restart == LOW && lastRestart == HIGH) {
+		restartPressTime = now;
+		restartLongTriggered = false;
+		restartCountdownStage = 0;
+	} else if (restart == LOW && !restartLongTriggered) {
+		unsigned long elapsed = now - restartPressTime;
+		if (elapsed >= REBOOT_HOLD_DURATION) {
+			restartLongTriggered = true;
+			sendSignal("REBOOT");
+			drawRebootIcon();
+		} else if (elapsed >= 2000 && restartCountdownStage < 2) {
+			restartCountdownStage = 2;
+			displayText("1");
+		} else if (elapsed >= 1000 && restartCountdownStage < 1) {
+			restartCountdownStage = 1;
+			displayText("2");
+		}
+	} else if (restart == HIGH && lastRestart == LOW) {
+		unsigned long elapsed = now - restartPressTime;
+		if (!restartLongTriggered) {
+			if (elapsed >= 50 && elapsed < 1000) {
+				sendSignal("RESTART");
+				drawRestartIcon();
+			} else {
+				// Aborted long press before reaching 3s
+				turnOffDisplay();
+			}
+		}
+		restartLongTriggered = false;
+		restartCountdownStage = 0;
 	}
 
 	lastMinus   = minus;
