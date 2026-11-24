@@ -25,20 +25,24 @@ unsigned long feedbackUntil = 0;
 const unsigned long FEEDBACK_DURATION = 1200; // ms
 
 // --- Button tracking (instant response with debounce lockout) ---
-bool lastMinus   = HIGH;
-bool lastPower   = HIGH;
-bool lastPlus    = HIGH;
-bool lastRestart = HIGH;
+bool lastMinus = HIGH;
+bool lastPower = HIGH;
+bool lastPlus  = HIGH;
 
-unsigned long lastMinusTime   = 0;
-unsigned long lastPowerTime   = 0;
-unsigned long lastPlusTime    = 0;
+unsigned long lastMinusTime = 0;
+unsigned long lastPowerTime = 0;
+unsigned long lastPlusTime  = 0;
 
-// Long-press reboot tracking for Reset button (Pin 5)
-unsigned long restartPressTime = 0;
-bool restartLongTriggered      = false;
-int restartCountdownStage      = 0;
+// Long-press reboot tracking for Reset button (Pin 5, active HIGH with external pull-down)
+const bool RESTART_PRESSED        = HIGH;
+bool restartActive                = false;
+unsigned long restartPressTime    = 0;
+unsigned long restartReleaseStart = 0;
+bool restartLongTriggered         = false;
+int restartCountdownStage         = 0;
 const unsigned long REBOOT_HOLD_DURATION = 3000; // 3 seconds to reboot rock-3c
+const unsigned long SHORT_PRESS_MIN_MS   = 50;   // Minimum press duration (debounce)
+const unsigned long RELEASE_DEBOUNCE_MS  = 30;   // Stable release time before ending press
 
 const unsigned long DEBOUNCE_LOCKOUT = 200; // ms
 
@@ -206,6 +210,8 @@ void parseIncomingSerial(const String &line) {
 			drawRebootIcon();
 		} else if (lineUpper.indexOf("POWER") >= 0) {
 			drawPowerIcon();
+		} else if (lineUpper.indexOf("BRIGHTNESS_DECREASED") >= 0 || lineUpper.indexOf("BRIGHTNESS_DOWN") >= 0) {
+			drawMinusIcon();
 		} else if (lineUpper.indexOf("BRIGHTNESS") >= 0) {
 			drawPlusIcon();
 		} else if (lineUpper.indexOf("RESTART") >= 0 || lineUpper.indexOf("RESET") >= 0) {
@@ -232,7 +238,7 @@ void setup() {
 	pinMode(PIN_MINUS, INPUT_PULLUP);
 	pinMode(PIN_POWER, INPUT_PULLUP);
 	pinMode(PIN_PLUS, INPUT_PULLUP);
-	pinMode(PIN_RESTART, INPUT_PULLUP);
+	pinMode(PIN_RESTART, INPUT);
 
 	// Announce readiness over USB Serial
 	sendSignal("READY: Arduino Workbench Controller (USB Mode)");
@@ -245,7 +251,7 @@ String serialRxBuffer = "";
 void loop() {
 	unsigned long now = millis();
 
-	// Read physical buttons (falling edge = pressed)
+	// Read physical buttons (falling edge = pressed for -, power, +; active HIGH for Pin 5)
 	bool minus   = digitalRead(PIN_MINUS);
 	bool power   = digitalRead(PIN_POWER);
 	bool plus    = digitalRead(PIN_PLUS);
@@ -270,42 +276,54 @@ void loop() {
 	}
 
 	// Reset button (Pin 5): short press (<1s) restarts service, 3s hold reboots rock-3c
-	if (restart == LOW && lastRestart == HIGH) {
-		restartPressTime = now;
-		restartLongTriggered = false;
-		restartCountdownStage = 0;
-	} else if (restart == LOW && !restartLongTriggered) {
-		unsigned long elapsed = now - restartPressTime;
-		if (elapsed >= REBOOT_HOLD_DURATION) {
-			restartLongTriggered = true;
-			sendSignal("REBOOT");
-			drawRebootIcon();
-		} else if (elapsed >= 2000 && restartCountdownStage < 2) {
-			restartCountdownStage = 2;
-			displayText("1");
-		} else if (elapsed >= 1000 && restartCountdownStage < 1) {
-			restartCountdownStage = 1;
-			displayText("2");
+	if (!restartActive) {
+		if (restart == RESTART_PRESSED) {
+			restartActive = true;
+			restartPressTime = now;
+			restartReleaseStart = 0;
+			restartLongTriggered = false;
+			restartCountdownStage = 0;
 		}
-	} else if (restart == HIGH && lastRestart == LOW) {
-		unsigned long elapsed = now - restartPressTime;
+	} else if (restart == RESTART_PRESSED) {
+		restartReleaseStart = 0;
 		if (!restartLongTriggered) {
-			if (elapsed >= 50 && elapsed < 1000) {
-				sendSignal("RESTART");
-				drawRestartIcon();
-			} else {
-				// Aborted long press before reaching 3s
-				turnOffDisplay();
+			unsigned long elapsed = now - restartPressTime;
+			if (elapsed >= REBOOT_HOLD_DURATION) {
+				restartLongTriggered = true;
+				sendSignal("REBOOT");
+				drawRebootIcon();
+			} else if (elapsed >= 2000 && restartCountdownStage < 2) {
+				restartCountdownStage = 2;
+				displayText("1");
+			} else if (elapsed >= 1000 && restartCountdownStage < 1) {
+				restartCountdownStage = 1;
+				displayText("2");
 			}
 		}
-		restartLongTriggered = false;
-		restartCountdownStage = 0;
+	} else {
+		if (restartReleaseStart == 0) {
+			restartReleaseStart = now;
+		} else if (now - restartReleaseStart >= RELEASE_DEBOUNCE_MS) {
+			unsigned long heldDuration = restartReleaseStart - restartPressTime;
+			if (!restartLongTriggered) {
+				if (heldDuration >= SHORT_PRESS_MIN_MS && heldDuration < 1000) {
+					sendSignal("RESTART");
+					drawRestartIcon();
+				} else if (restartCountdownStage > 0) {
+					// Aborted long press before reaching 3s
+					turnOffDisplay();
+				}
+			}
+			restartActive = false;
+			restartReleaseStart = 0;
+			restartLongTriggered = false;
+			restartCountdownStage = 0;
+		}
 	}
 
-	lastMinus   = minus;
-	lastPower   = power;
-	lastPlus    = plus;
-	lastRestart = restart;
+	lastMinus = minus;
+	lastPower = power;
+	lastPlus  = plus;
 
 	// Non-blocking serial read (accumulate until newline)
 	while (Serial.available()) {
